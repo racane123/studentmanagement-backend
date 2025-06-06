@@ -7,13 +7,16 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
 async function runMigration() {
+    const client = await pool.connect()
     try {
+        await client.query('BEGIN')
+
         // Read and execute student table migration
         const studentSql = fs.readFileSync(
             path.join(__dirname, 'create_student_table.sql'),
             'utf8'
         )
-        await pool.query(studentSql)
+        await client.query(studentSql)
         console.log('Student table migration completed successfully')
 
         // Read and execute teacher table migration
@@ -21,7 +24,7 @@ async function runMigration() {
             path.join(__dirname, 'create_teacher_table.sql'),
             'utf8'
         )
-        await pool.query(teacherSql)
+        await client.query(teacherSql)
         console.log('Teacher table migration completed successfully')
 
         // Read and execute subject tables migration
@@ -29,7 +32,7 @@ async function runMigration() {
             path.join(__dirname, 'create_subject_table.sql'),
             'utf8'
         )
-        await pool.query(subjectSql)
+        await client.query(subjectSql)
         console.log('Subject tables migration completed successfully')
 
         // Read and execute section tables migration
@@ -37,15 +40,20 @@ async function runMigration() {
             path.join(__dirname, 'create_section_table.sql'),
             'utf8'
         )
-        await pool.query(sectionSql)
+        await client.query(sectionSql)
         console.log('Section tables migration completed successfully')
 
+        await client.query('COMMIT')
+        console.log('All migrations completed successfully')
+
     } catch (error) {
+        await client.query('ROLLBACK')
         console.error('Migration failed:', error)
+        throw error
     } finally {
-        // Close the pool
+        client.release()
         await pool.end()
     }
 }
 
-runMigration() 
+runMigration().catch(console.error) 

@@ -603,4 +603,242 @@ sectionRouter.post('/sections/:sectionId/students', async (req, res) => {
     }
 })
 
+// Create a new section with students, subjects, and adviser
+sectionRouter.post('/', async (req, res) => {
+    const client = await pool.connect()
+    
+    try {
+        const {
+            name,
+            grade_level,
+            academic_year,
+            student_ids,
+            subject_ids,
+            teacher_ids,
+            adviser_id
+        } = req.body
+
+        await client.query('BEGIN')
+
+        // Insert the section
+        const sectionResult = await client.query(
+            'INSERT INTO sections (name, grade_level, academic_year) VALUES ($1, $2, $3) RETURNING id',
+            [name, grade_level, academic_year]
+        )
+        const sectionId = sectionResult.rows[0].id
+
+        // Insert students into section_students
+        if (student_ids && student_ids.length > 0) {
+            const studentValues = student_ids.map(studentId => 
+                `(${sectionId}, ${studentId})`
+            ).join(',')
+            
+            await client.query(`
+                INSERT INTO section_students (section_id, student_id)
+                VALUES ${studentValues}
+            `)
+        }
+
+        // Insert subjects and teachers into section_subjects
+        if (subject_ids && subject_ids.length > 0) {
+            const subjectValues = subject_ids.map((subjectId, index) => 
+                `(${sectionId}, ${subjectId}, ${teacher_ids[index]})`
+            ).join(',')
+            
+            await client.query(`
+                INSERT INTO section_subjects (section_id, subject_id, teacher_id)
+                VALUES ${subjectValues}
+            `)
+        }
+
+        // Insert adviser
+        if (adviser_id) {
+            await client.query(
+                'INSERT INTO section_advisers (section_id, teacher_id) VALUES ($1, $2)',
+                [sectionId, adviser_id]
+            )
+        }
+
+        await client.query('COMMIT')
+
+        res.status(201).json({
+            message: 'Section created successfully',
+            section_id: sectionId
+        })
+
+    } catch (error) {
+        await client.query('ROLLBACK')
+        console.error('Error creating section:', error)
+        res.status(500).json({ error: 'Internal server error' })
+    } finally {
+        client.release()
+    }
+})
+
+// Get all sections with their details
+sectionRouter.get('/', async (req, res) => {
+    try {
+        const sectionsResult = await pool.query(`
+            SELECT 
+                s.*,
+                json_agg(DISTINCT jsonb_build_object(
+                    'id', st.id,
+                    'name', st.name,
+                    'email', st.email
+                )) as students,
+                json_agg(DISTINCT jsonb_build_object(
+                    'id', sub.id,
+                    'name', sub.name,
+                    'teacher_id', ss.teacher_id
+                )) as subjects,
+                jsonb_build_object(
+                    'id', t.id,
+                    'name', t.name,
+                    'email', t.email
+                ) as adviser
+            FROM sections s
+            LEFT JOIN section_students ss ON s.id = ss.section_id
+            LEFT JOIN students st ON ss.student_id = st.id
+            LEFT JOIN section_subjects ssub ON s.id = ssub.section_id
+            LEFT JOIN subjects sub ON ssub.subject_id = sub.id
+            LEFT JOIN section_advisers sa ON s.id = sa.section_id
+            LEFT JOIN teachers t ON sa.teacher_id = t.id
+            GROUP BY s.id, t.id, t.name, t.email
+        `)
+
+        res.json(sectionsResult.rows)
+    } catch (error) {
+        console.error('Error fetching sections:', error)
+        res.status(500).json({ error: 'Internal server error' })
+    }
+})
+
+// Get a specific section by ID
+sectionRouter.get('/:id', async (req, res) => {
+    try {
+        const sectionResult = await pool.query(`
+            SELECT 
+                s.*,
+                json_agg(DISTINCT jsonb_build_object(
+                    'id', st.id,
+                    'name', st.name,
+                    'email', st.email
+                )) as students,
+                json_agg(DISTINCT jsonb_build_object(
+                    'id', sub.id,
+                    'name', sub.name,
+                    'teacher_id', ss.teacher_id
+                )) as subjects,
+                jsonb_build_object(
+                    'id', t.id,
+                    'name', t.name,
+                    'email', t.email
+                ) as adviser
+            FROM sections s
+            LEFT JOIN section_students ss ON s.id = ss.section_id
+            LEFT JOIN students st ON ss.student_id = st.id
+            LEFT JOIN section_subjects ssub ON s.id = ssub.section_id
+            LEFT JOIN subjects sub ON ssub.subject_id = sub.id
+            LEFT JOIN section_advisers sa ON s.id = sa.section_id
+            LEFT JOIN teachers t ON sa.teacher_id = t.id
+            WHERE s.id = $1
+            GROUP BY s.id, t.id, t.name, t.email
+        `, [req.params.id])
+
+        if (sectionResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Section not found' })
+        }
+
+        res.json(sectionResult.rows[0])
+    } catch (error) {
+        console.error('Error fetching section:', error)
+        res.status(500).json({ error: 'Internal server error' })
+    }
+})
+
+// Update a section
+sectionRouter.put('/:id', async (req, res) => {
+    const client = await pool.connect()
+    
+    try {
+        const {
+            name,
+            grade_level,
+            academic_year,
+            student_ids,
+            subject_ids,
+            teacher_ids,
+            adviser_id
+        } = req.body
+
+        await client.query('BEGIN')
+
+        // Update section details
+        await client.query(
+            'UPDATE sections SET name = $1, grade_level = $2, academic_year = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $4',
+            [name, grade_level, academic_year, req.params.id]
+        )
+
+        // Update students
+        if (student_ids) {
+            await client.query('DELETE FROM section_students WHERE section_id = $1', [req.params.id])
+            if (student_ids.length > 0) {
+                const studentValues = student_ids.map(studentId => 
+                    `(${req.params.id}, ${studentId})`
+                ).join(',')
+                
+                await client.query(`
+                    INSERT INTO section_students (section_id, student_id)
+                    VALUES ${studentValues}
+                `)
+            }
+        }
+
+        // Update subjects and teachers
+        if (subject_ids) {
+            await client.query('DELETE FROM section_subjects WHERE section_id = $1', [req.params.id])
+            if (subject_ids.length > 0) {
+                const subjectValues = subject_ids.map((subjectId, index) => 
+                    `(${req.params.id}, ${subjectId}, ${teacher_ids[index]})`
+                ).join(',')
+                
+                await client.query(`
+                    INSERT INTO section_subjects (section_id, subject_id, teacher_id)
+                    VALUES ${subjectValues}
+                `)
+            }
+        }
+
+        // Update adviser
+        if (adviser_id) {
+            await client.query(
+                'UPDATE section_advisers SET teacher_id = $1 WHERE section_id = $2',
+                [adviser_id, req.params.id]
+            )
+        }
+
+        await client.query('COMMIT')
+
+        res.json({ message: 'Section updated successfully' })
+
+    } catch (error) {
+        await client.query('ROLLBACK')
+        console.error('Error updating section:', error)
+        res.status(500).json({ error: 'Internal server error' })
+    } finally {
+        client.release()
+    }
+})
+
+// Delete a section
+sectionRouter.delete('/:id', async (req, res) => {
+    try {
+        await pool.query('DELETE FROM sections WHERE id = $1', [req.params.id])
+        res.json({ message: 'Section deleted successfully' })
+    } catch (error) {
+        console.error('Error deleting section:', error)
+        res.status(500).json({ error: 'Internal server error' })
+    }
+})
+
 export default sectionRouter 

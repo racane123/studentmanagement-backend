@@ -1,15 +1,25 @@
 import express from "express"
 import dotenv from 'dotenv'
 import cors from 'cors'
+import path from 'path'
+import { fileURLToPath } from 'url'
 import middlewareAuth from './middleware/authentication.js'
 import teacherRouter from "./api/teachers.js"
 import subjectRouter from "./api/subjects.js"
 import studentRouter from "./api/students.js"
 import authRouter from './api/auth.js'
+import sectionRouter from './api/sections.js'
 
-dotenv.config()
-const PORT = 3000 || process.env.PORT
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
+
+// Load environment variables from the correct path
+dotenv.config({ path: path.join(__dirname, '.env') })
+
+const PORT = process.env.PORT || 3000
 const app = express()
+
+console.log(process.env.DB_PASSWORD)
 
 // CORS configuration
 const corsOptions = {
@@ -28,6 +38,7 @@ app.use('/authentication', authRouter)
 app.use('/student', studentRouter)
 app.use('/teacher', teacherRouter)
 app.use('/subject', subjectRouter)
+app.use('/section', sectionRouter)
 
 app.listen(PORT, () => {
   console.log(`Server is running on port http://localhost:${PORT}`)
