@@ -19,7 +19,7 @@ dotenv.config({ path: path.join(__dirname, '.env') })
 const PORT = process.env.PORT || 3000
 const app = express()
 
-console.log(process.env.DB_PASSWORD)
+//console.log(process.env.DB_PASSWORD)
 
 // CORS configuration
 const corsOptions = {

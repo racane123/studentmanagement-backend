@@ -48,12 +48,16 @@ async function runMigration() {
 
     } catch (error) {
         await client.query('ROLLBACK')
-        console.error('Migration failed:', error)
-        throw error
+        console.error('Migration failed:', error.message)
+        console.error('Error details:', error)
+        process.exit(1)
     } finally {
         client.release()
         await pool.end()
     }
 }
 
-runMigration().catch(console.error) 
+runMigration().catch(error => {
+    console.error('Unhandled error during migration:', error)
+    process.exit(1)
+}) 

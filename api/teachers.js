@@ -3,16 +3,126 @@ import express from 'express'
 
 const teacherRouter = express.Router()
 
+// Get all teachers with pagination and search
+teacherRouter.get('/teachers', async (req, res) => {
+    const { 
+        page = 1, 
+        limit = 10, 
+        search,
+        department,
+        schoolYear
+    } = req.query;
+
+    const offset = (page - 1) * limit;
+    const queryParams = [];
+    let paramCount = 1;
+
+    let query = `
+        SELECT t.*, 
+               (SELECT COUNT(*) 
+                FROM teacher_subjects ts 
+                WHERE ts.teacher_id = t.id AND ts.is_active = true) as subject_count
+        FROM teacher t
+        WHERE t.is_active = true
+    `;
+
+    // Filters
+    if (search) {
+        query += ` AND (
+            LOWER(t.firstname) LIKE LOWER($${paramCount}) OR 
+            LOWER(t.lastname) LIKE LOWER($${paramCount}) OR
+            LOWER(t.email) LIKE LOWER($${paramCount})
+        )`;
+        queryParams.push(`%${search}%`);
+        paramCount++;
+    }
+
+    if (department) {
+        query += ` AND t.department = $${paramCount}`;
+        queryParams.push(department);
+        paramCount++;
+    }
+
+    if (schoolYear) {
+        query += ` AND t.schoolyear = $${paramCount}`;
+        queryParams.push(schoolYear);
+        paramCount++;
+    }
+
+    // Pagination and Sorting
+    query += ` ORDER BY t.lastname, t.firstname LIMIT $${paramCount} OFFSET $${paramCount + 1}`;
+    queryParams.push(parseInt(limit), parseInt(offset));
+
+    try {
+        // Fetch paginated teacher data
+        const result = await pool.query(query, queryParams);
+        const teachers = result.rows;
+
+        // Build count query with reused filters
+        let countQuery = `
+            SELECT COUNT(DISTINCT t.id)
+            FROM teacher t
+            WHERE t.is_active = true
+        `;
+        const countParams = [];
+        let countParamCount = 1;
+
+        if (search) {
+            countQuery += ` AND (
+                LOWER(t.firstname) LIKE LOWER($${countParamCount}) OR 
+                LOWER(t.lastname) LIKE LOWER($${countParamCount}) OR
+                LOWER(t.email) LIKE LOWER($${countParamCount})
+            )`;
+            countParams.push(`%${search}%`);
+            countParamCount++;
+        }
+
+        if (department) {
+            countQuery += ` AND t.department = $${countParamCount}`;
+            countParams.push(department);
+            countParamCount++;
+        }
+
+        if (schoolYear) {
+            countQuery += ` AND t.schoolyear = $${countParamCount}`;
+            countParams.push(schoolYear);
+            countParamCount++;
+        }
+
+        const countResult = await pool.query(countQuery, countParams);
+        const total = parseInt(countResult.rows[0].count);
+
+        // Success response
+        res.status(200).json({
+            message: "Successfully retrieved teachers",
+            teachers,
+            pagination: {
+                total,
+                page: parseInt(page),
+                limit: parseInt(limit),
+                totalPages: Math.ceil(total / limit)
+            }
+        });
+
+    } catch (error) {
+        console.error("Error fetching teachers:", error.message);
+        res.status(500).json({
+            message: "Error fetching teachers",
+            error: error.message
+        });
+    }
+});
+
 // Input validation middleware
 const validateTeacherInput = (req, res, next) => {
-    const { firstName, lastName, gender, age, email, schoolYear } = req.body
+    const { firstname, lastname, gender, age, email, schoolyear } = req.body
     
     const errors = []
     
-    if (!firstName || firstName.trim().length === 0) {
+    if (!firstname || firstname.trim().length === 0) {
         errors.push('First name is required')
     }
-    if (!lastName || lastName.trim().length === 0) {
+    if (!lastname || lastname.trim().length === 0) {
         errors.push('Last name is required')
     }
     if (!gender || !['male', 'female', 'other'].includes(gender.toLowerCase())) {
@@ -24,7 +134,7 @@ const validateTeacherInput = (req, res, next) => {
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
         errors.push('Valid email is required')
     }
-    if (!schoolYear || !/^\d{4}-\d{4}$/.test(schoolYear)) {
+    if (!schoolyear || !/^\d{4}-\d{4}$/.test(schoolyear)) {
         errors.push('School year must be in format YYYY-YYYY')
     }
 
@@ -41,24 +151,24 @@ const validateTeacherInput = (req, res, next) => {
 // Create teacher
 teacherRouter.post("/teachers", validateTeacherInput, async (req, res) => {
     const {
-        firstName, middleName, lastName, gender, age, email,
-        phoneNumber, department, qualification,
-        yearsOfExperience, schoolYear
+        firstname, middlename, lastname, gender, age, email,
+        phonenumber, department, qualification,
+        yearsofexperience, schoolyear
     } = req.body
 
     const query = `
         INSERT INTO teacher(
-            firstName, middleName, lastName, gender, age, email,
-            phoneNumber, department, qualification,
-            yearsOfExperience, schoolYear, is_active
+            firstname, middlename, lastname, gender, age, email,
+            phonenumber, department, qualification,
+            yearsofexperience, schoolyear, is_active
         ) 
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, true) 
         RETURNING *
     `
     const insertQuery = [
-        firstName, middleName, lastName, gender, age, email,
-        phoneNumber, department, qualification,
-        yearsOfExperience, schoolYear
+        firstname, middlename, lastname, gender, age, email,
+        phonenumber, department, qualification,
+        yearsofexperience, schoolyear
     ]
 
     try {
@@ -86,124 +196,25 @@ teacherRouter.post("/teachers", validateTeacherInput, async (req, res) => {
     }
 })
 
-// Get all teachers with pagination and search
-teacherRouter.get('/teachers', async (req, res) => {
-    const { 
-        page = 1, 
-        limit = 10, 
-        search,
-        department,
-        schoolYear
-    } = req.query
-
-    const offset = (page - 1) * limit
-    let query = `
-        SELECT t.*, 
-               json_agg(json_build_object(
-                   'id', s.id,
-                   'name', s.name,
-                   'code', s.code
-               )) as subjects
-        FROM teacher t
-        LEFT JOIN teacher_subjects ts ON t.id = ts.teacher_id AND ts.is_active = true
-        LEFT JOIN subject s ON ts.subject_id = s.id AND s.is_active = true
-        WHERE t.is_active = true
-    `
-    const queryParams = []
-    let paramCount = 1
-
-    if (search) {
-        query += ` AND (
-            LOWER(t.firstName) LIKE LOWER($${paramCount}) OR 
-            LOWER(t.lastName) LIKE LOWER($${paramCount}) OR 
-            LOWER(t.middleName) LIKE LOWER($${paramCount}) OR
-            LOWER(t.email) LIKE LOWER($${paramCount})
-        )`
-        queryParams.push(`%${search}%`)
-        paramCount++
-    }
-
-    if (department) {
-        query += ` AND t.department = $${paramCount}`
-        queryParams.push(department)
-        paramCount++
-    }
-
-    if (schoolYear) {
-        query += ` AND t.schoolYear = $${paramCount}`
-        queryParams.push(schoolYear)
-        paramCount++
-    }
-
-    // Add pagination
-    query += ` GROUP BY t.id ORDER BY t.lastName, t.firstName LIMIT $${paramCount} OFFSET $${paramCount + 1}`
-    queryParams.push(limit, offset)
-
-    try {
-        const result = await pool.query(query, queryParams)
-        const teachers = result.rows.map(teacher => ({
-            ...teacher,
-            subjects: teacher.subjects.filter(s => s.id !== null)
-        }))
-
-        // Get total count for pagination
-        const countQuery = `
-            SELECT COUNT(DISTINCT t.id)
-            FROM teacher t
-            WHERE t.is_active = true
-            ${search ? `AND (
-                LOWER(t.firstName) LIKE LOWER($1) OR 
-                LOWER(t.lastName) LIKE LOWER($1) OR 
-                LOWER(t.middleName) LIKE LOWER($1) OR
-                LOWER(t.email) LIKE LOWER($1)
-            )` : ''}
-            ${department ? `AND t.department = $${search ? 2 : 1}` : ''}
-            ${schoolYear ? `AND t.schoolYear = $${search ? (department ? 3 : 2) : (department ? 2 : 1)}` : ''}
-        `
-        const countParams = []
-        if (search) countParams.push(`%${search}%`)
-        if (department) countParams.push(department)
-        if (schoolYear) countParams.push(schoolYear)
-
-        const countResult = await pool.query(countQuery, countParams)
-        const total = parseInt(countResult.rows[0].count)
-
-        res.status(200).json({
-            message: "Successfully retrieved the data",
-            teachers,
-            pagination: {
-                total,
-                page: parseInt(page),
-                limit: parseInt(limit),
-                totalPages: Math.ceil(total / limit)
-            }
-        })
-    } catch (error) {
-        console.error({
-            message: `Error has occurred ${error.message}`
-        })
-        res.status(500).json({
-            message: "Error fetching teachers",
-            error: error.message
-        })
-    }
-})
-
-// Get single teacher by ID
+// Get single teacher by ID with details
 teacherRouter.get('/teachers/:id', async (req, res) => {
     const { id } = req.params
     const query = `
         SELECT t.*, 
-               json_agg(json_build_object(
-                   'id', s.id,
-                   'name', s.name,
-                   'code', s.code
-               )) as subjects
+               (
+                   SELECT json_agg(json_build_object(
+                       'id', s.id,
+                       'name', s.name,
+                       'code', s.code,
+                       'schedule', ts.schedule,
+                       'room', ts.room
+                   ))
+                   FROM teacher_subjects ts
+                   JOIN subject s ON ts.subject_id = s.id
+                   WHERE ts.teacher_id = t.id AND ts.is_active = true
+               ) as subjects
         FROM teacher t
-        LEFT JOIN teacher_subjects ts ON t.id = ts.teacher_id AND ts.is_active = true
-        LEFT JOIN subject s ON ts.subject_id = s.id AND s.is_active = true
         WHERE t.id = $1 AND t.is_active = true
-        GROUP BY t.id
     `
 
     try {
@@ -215,7 +226,9 @@ teacherRouter.get('/teachers/:id', async (req, res) => {
                 message: "Teacher not found"
             })
         } else {
-            teacher.subjects = teacher.subjects.filter(s => s.id !== null)
+            // Filter out null values from arrays
+            teacher.subjects = teacher.subjects?.filter(s => s !== null) || []
+            
             res.status(200).json({
                 message: "Successfully retrieved teacher",
                 teacher
@@ -223,7 +236,7 @@ teacherRouter.get('/teachers/:id', async (req, res) => {
         }
     } catch (error) {
         console.error({
-            message: `Error fetching teacher: ${error.message}`
+            message: `Error has occurred ${error.message}`
         })
         res.status(500).json({
             message: "Error fetching teacher",
@@ -236,32 +249,32 @@ teacherRouter.get('/teachers/:id', async (req, res) => {
 teacherRouter.put('/teachers/:id', validateTeacherInput, async (req, res) => {
     const { id } = req.params
     const {
-        firstName, middleName, lastName, gender, age, email,
-        phoneNumber, department, qualification,
-        yearsOfExperience, schoolYear
+        firstname, middlename, lastname, gender, age, email,
+        phonenumber, department, qualification,
+        yearsofexperience, schoolyear
     } = req.body
     
     const query = `
         UPDATE teacher 
-        SET firstName = $1, 
-            middleName = $2, 
-            lastName = $3, 
+        SET firstname = $1, 
+            middlename = $2, 
+            lastname = $3, 
             gender = $4, 
             age = $5, 
             email = $6,
-            phoneNumber = $7,
+            phonenumber = $7,
             department = $8,
             qualification = $9,
-            yearsOfExperience = $10,
-            schoolYear = $11,
+            yearsofexperience = $10,
+            schoolyear = $11,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = $12 AND is_active = true
         RETURNING *
     `
     const updateQuery = [
-        firstName, middleName, lastName, gender, age, email,
-        phoneNumber, department, qualification,
-        yearsOfExperience, schoolYear, id
+        firstname, middlename, lastname, gender, age, email,
+        phonenumber, department, qualification,
+        yearsofexperience, schoolyear, id
     ]
 
     try {
@@ -328,7 +341,7 @@ teacherRouter.delete('/teachers/:id', async (req, res) => {
 // Assign subjects to teacher
 teacherRouter.post('/teachers/:teacherId/subjects', async (req, res) => {
     const { teacherId } = req.params
-    const { subjectIds, schoolYear } = req.body
+    const { subjectIds, schoolyear } = req.body
 
     if (!Array.isArray(subjectIds) || subjectIds.length === 0) {
         return res.status(400).json({
@@ -336,7 +349,7 @@ teacherRouter.post('/teachers/:teacherId/subjects', async (req, res) => {
         })
     }
 
-    if (!schoolYear || !/^\d{4}-\d{4}$/.test(schoolYear)) {
+    if (!schoolyear || !/^\d{4}-\d{4}$/.test(schoolyear)) {
         return res.status(400).json({
             message: 'Valid school year (YYYY-YYYY) is required'
         })
@@ -376,20 +389,20 @@ teacherRouter.post('/teachers/:teacherId/subjects', async (req, res) => {
             `UPDATE teacher_subjects 
              SET is_active = false, 
                  deleted_at = CURRENT_TIMESTAMP
-             WHERE teacher_id = $1 AND schoolYear = $2`,
-            [teacherId, schoolYear]
+             WHERE teacher_id = $1 AND schoolyear = $2`,
+            [teacherId, schoolyear]
         )
 
         // Then, insert new assignments
         for (const subjectId of subjectIds) {
             await client.query(
-                `INSERT INTO teacher_subjects (teacher_id, subject_id, schoolYear)
+                `INSERT INTO teacher_subjects (teacher_id, subject_id, schoolyear)
                  VALUES ($1, $2, $3)
-                 ON CONFLICT (teacher_id, subject_id, schoolYear) 
+                 ON CONFLICT (teacher_id, subject_id, schoolyear) 
                  DO UPDATE SET is_active = true, 
                               deleted_at = NULL,
                               updated_at = CURRENT_TIMESTAMP`,
-                [teacherId, subjectId, schoolYear]
+                [teacherId, subjectId, schoolyear]
             )
         }
 
@@ -435,7 +448,7 @@ teacherRouter.post('/teachers/:teacherId/subjects', async (req, res) => {
 // Get teacher's subjects
 teacherRouter.get('/teachers/:teacherId/subjects', async (req, res) => {
     const { teacherId } = req.params
-    const { schoolYear } = req.query
+    const { schoolyear } = req.query
 
     let query = `
         SELECT s.*
@@ -447,9 +460,9 @@ teacherRouter.get('/teachers/:teacherId/subjects', async (req, res) => {
     `
     const queryParams = [teacherId]
 
-    if (schoolYear) {
-        query += ` AND ts.schoolYear = $2`
-        queryParams.push(schoolYear)
+    if (schoolyear) {
+        query += ` AND ts.schoolyear = $2`
+        queryParams.push(schoolyear)
     }
 
     try {
@@ -464,6 +477,43 @@ teacherRouter.get('/teachers/:teacherId/subjects', async (req, res) => {
         })
         res.status(500).json({
             message: "Error fetching teacher's subjects",
+            error: error.message
+        })
+    }
+})
+
+// Get teachers for display (dropdowns/lists)
+teacherRouter.get('/teachers/display', async (req, res) => {
+    const { schoolyear } = req.query
+
+    const query = `
+        SELECT 
+            t.id,
+            t.firstname,
+            t.lastname,
+            t.department,
+            t.schoolyear,
+            (SELECT COUNT(*) FROM teacher_subjects ts WHERE ts.teacher_id = t.id AND ts.is_active = true) as subject_count
+        FROM teacher t
+        WHERE t.is_active = true
+        ${schoolyear ? `AND t.schoolyear = $1` : ''}
+        ORDER BY t.lastname, t.firstname
+    `
+
+    try {
+        const result = await pool.query(query, schoolyear ? [schoolyear] : [])
+        const teachers = result.rows
+
+        res.status(200).json({
+            message: "Successfully retrieved teachers for display",
+            teachers
+        })
+    } catch (error) {
+        console.error({
+            message: `Error has occurred ${error.message}`
+        })
+        res.status(500).json({
+            message: "Error fetching teachers for display",
             error: error.message
         })
     }
